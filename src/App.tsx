@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 
 // Check if WebGPU is available
 const IS_WEBGPU_AVAILABLE = !!navigator.gpu;
+
 const OAI_API_KEY = import.meta.env.VITE_OPENAI_API_KEY;
 
 function App() {
@@ -13,6 +14,16 @@ function App() {
     const [executionTime, setExecutionTime] = useState(0);
     const [modelTime, setModelTime] = useState(0);
     const [transcriptionTime, setTranscriptionTime] = useState(0);
+    const [gpuName, setGpuName] = useState("");
+
+    // Get GPU name
+    useEffect(() => {
+        if (IS_WEBGPU_AVAILABLE) {
+            navigator.gpu.requestAdapter().then((adapter) => {
+                setGpuName(adapter.info.vendor + "-" + adapter.info.architecture);
+            });
+        }
+    }, []);
 
     const transcriber = useTranscriber();
 
@@ -85,6 +96,7 @@ function App() {
                 <h1 className="text-5xl font-extrabold tracking-tight text-slate-900 sm:text-7xl text-center">
                     Whisper WebGPU
                 </h1>
+                <p>Device GPU: {gpuName}</p>
                 <h2 className="mt-3 mb-5 px-4 text-center text-1xl font-semibold tracking-tight text-slate-900 sm:text-2xl">
                     ML-powered speech recognition directly in your browser
                 </h2>
