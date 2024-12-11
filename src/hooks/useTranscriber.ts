@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState, useEffect, useRef } from "react";
 import { useWorker } from "./useWorker";
 import Constants from "../utils/Constants";
 
@@ -24,6 +24,8 @@ export interface TranscriberData {
     tps?: number;
     text: string;
     chunks: { text: string; timestamp: [number, number | null] }[];
+    total_transcription_time?: number;
+    model_loading_time?: number;
 }
 
 export interface Transcriber {
@@ -36,28 +38,73 @@ export interface Transcriber {
     model: string;
     setModel: (model: string) => void;
     multilingual: boolean;
-    setMultilingual: (model: boolean) => void;
+    setMultilingual: (val: boolean) => void;
     subtask: string;
-    setSubtask: (subtask: string) => void;
+    setSubtask: (val: string) => void;
     language?: string;
-    setLanguage: (language: string) => void;
+    setLanguage: (val: string) => void;
 }
+// The rest of your types and interfaces remain the same...
 
 export function useTranscriber(): Transcriber {
-    const [transcript, setTranscript] = useState<TranscriberData | undefined>(
-        undefined,
-    );
+    const [transcript, setTranscript] = useState<TranscriberData | undefined>(undefined);
     const [isBusy, setIsBusy] = useState(false);
     const [isModelLoading, setIsModelLoading] = useState(false);
-
     const [progressItems, setProgressItems] = useState<ProgressItem[]>([]);
+
+    // Using refs to store time values
+    const modelLoadingStartTimeRef = useRef<number | null>(null);
+    const modelLoadingEndTimeRef = useRef<number | null>(null);
+    const transcriptionStartTimeRef = useRef<number | null>(null);
+
+    // Update model loading time when both start and end times are set
+    // useEffect(() => {
+    //     if (modelLoadingStartTimeRef.current !== null && modelLoadingEndTimeRef.current !== null) {
+    //         const modelLoadingTime = modelLoadingEndTimeRef.current - modelLoadingStartTimeRef.current;
+    //         // // console.log("Calculated model loading time:", modelLoadingTime, "ms");
+    //     }
+    // }, [modelLoadingStartTimeRef.current, modelLoadingEndTimeRef.current]);
+
+    // Update transcription time when transcription start time is set
+    useEffect(() => {
+        if (transcriptionStartTimeRef.current !== null) {
+            const transcriptionEndTime = performance.now();
+            // const totalTranscriptionTime = transcriptionEndTime - transcriptionStartTimeRef.current;
+            // console.log("Calculated transcription time:", totalTranscriptionTime, "ms");
+        }
+    }, [transcriptionStartTimeRef.current]);
 
     const webWorker = useWorker((event) => {
         const message = event.data;
-        // Update the state with the result
+
         switch (message.status) {
+            case "initiate":
+                // console.log("Model loading initiated.");
+                if (modelLoadingStartTimeRef.current === null) {
+                    modelLoadingStartTimeRef.current = performance.now();
+                    // console.log("Model loading start time set:", modelLoadingStartTimeRef.current);
+                }
+                setIsModelLoading(true);
+                setProgressItems((prev) => [...prev, message]);
+                break;
+
+            case "done":
+                // console.log(`Model file ${message.file} done loading.`);
+                setProgressItems((prev) =>
+                    prev.filter((item) => item.file !== message.file),
+                );
+                break;
+
+            case "ready":
+                // console.log("Model is fully ready.");
+                setIsModelLoading(false);
+                if (modelLoadingEndTimeRef.current === null) {
+                    modelLoadingEndTimeRef.current = performance.now();
+                    // console.log("Model loading end time set:", modelLoadingEndTimeRef.current);
+                }
+                break;
+
             case "progress":
-                // Model file progress: update one of the progress items.
                 setProgressItems((prev) =>
                     prev.map((item) => {
                         if (item.file === message.file) {
@@ -67,66 +114,76 @@ export function useTranscriber(): Transcriber {
                     }),
                 );
                 break;
+
             case "update":
+                // console.log("Transcription update received. Still processing...");
+                setIsBusy(true);
+                break;
+
             case "complete":
-                const busy = message.status === "update";
+                // console.log("Transcription completed successfully.");
+                setIsBusy(false);
                 const updateMessage = message as TranscriberUpdateData;
+
+                // We calculate transcription and model loading times here
+                let totalTranscriptionTime: number | undefined = undefined;
+                if (transcriptionStartTimeRef.current !== null) {
+                    const transcriptionEndTime = performance.now();
+                    totalTranscriptionTime = transcriptionEndTime - transcriptionStartTimeRef.current;
+                    // console.log("Calculated transcription time:", totalTranscriptionTime, "ms");
+                }
+
+                let modelLoadingTime: number | undefined = undefined;
+                if (modelLoadingStartTimeRef.current !== null && modelLoadingEndTimeRef.current !== null) {
+                    modelLoadingTime = modelLoadingEndTimeRef.current - modelLoadingStartTimeRef.current;
+                    // console.log("Calculated model loading time:", modelLoadingTime, "ms");
+                }
+
+                // Setting transcript after calculation
                 setTranscript({
-                    isBusy: busy,
+                    isBusy: false,
                     text: updateMessage.data.text,
                     tps: updateMessage.data.tps,
                     chunks: updateMessage.data.chunks,
+                    total_transcription_time: totalTranscriptionTime,
+                    model_loading_time: modelLoadingTime,
                 });
-                setIsBusy(busy);
                 break;
 
-            case "initiate":
-                // Model file start load: add a new progress item to the list.
-                setIsModelLoading(true);
-                setProgressItems((prev) => [...prev, message]);
-                break;
-            case "ready":
-                setIsModelLoading(false);
-                break;
             case "error":
+                console.error("Error received from worker:", message.data.message);
                 setIsBusy(false);
                 alert(
                     `An error occurred: "${message.data.message}". Please file a bug report.`,
                 );
                 break;
-            case "done":
-                // Model file loaded: remove the progress item from the list.
-                setProgressItems((prev) =>
-                    prev.filter((item) => item.file !== message.file),
-                );
-                break;
 
             default:
-                // initiate/download/done
+                // console.log("Unhandled message status:", message.status);
                 break;
         }
     });
 
     const [model, setModel] = useState<string>(Constants.DEFAULT_MODEL);
     const [subtask, setSubtask] = useState<string>(Constants.DEFAULT_SUBTASK);
-    const [multilingual, setMultilingual] = useState<boolean>(
-        Constants.DEFAULT_MULTILINGUAL,
-    );
-    const [language, setLanguage] = useState<string>(
-        Constants.DEFAULT_LANGUAGE,
-    );
+    const [multilingual, setMultilingual] = useState<boolean>(Constants.DEFAULT_MULTILINGUAL);
+    const [language, setLanguage] = useState<string>(Constants.DEFAULT_LANGUAGE);
 
     const onInputChange = useCallback(() => {
+        // console.log("Input changed. Clearing transcript state.");
         setTranscript(undefined);
     }, []);
 
     const postRequest = useCallback(
         async (audioData: AudioBuffer | undefined) => {
             if (audioData) {
+                // console.log("Post request to worker started. Preparing audio...");
                 setTranscript(undefined);
                 setIsBusy(true);
+                transcriptionStartTimeRef.current = performance.now();
+                // console.log("Transcription start time set:", transcriptionStartTimeRef.current);
 
-                let audio;
+                let audio: Float32Array;
                 if (audioData.numberOfChannels === 2) {
                     const SCALING_FACTOR = Math.sqrt(2);
 
@@ -137,19 +194,22 @@ export function useTranscriber(): Transcriber {
                     for (let i = 0; i < audioData.length; ++i) {
                         audio[i] = (SCALING_FACTOR * (left[i] + right[i])) / 2;
                     }
+                    // console.log("Converted stereo to mono.");
                 } else {
-                    // If the audio is not stereo, we can just use the first channel:
                     audio = audioData.getChannelData(0);
+                    // console.log("Audio is already mono.");
                 }
 
+                // console.log("Sending audio and parameters to worker...");
                 webWorker.postMessage({
                     audio,
                     model,
                     multilingual,
                     subtask: multilingual ? subtask : null,
-                    language:
-                        multilingual && language !== "auto" ? language : null,
+                    language: multilingual && language !== "auto" ? language : null,
                 });
+            } else {
+                // console.log("No audio data provided. Cannot start transcription.");
             }
         },
         [webWorker, model, multilingual, subtask, language],
@@ -182,6 +242,7 @@ export function useTranscriber(): Transcriber {
         multilingual,
         subtask,
         language,
+        onInputChange
     ]);
 
     return transcriber;
